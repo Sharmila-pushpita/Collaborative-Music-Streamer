@@ -1,4 +1,5 @@
+com\musicstreamer\AudioStreamReceiver.class
 com\musicstreamer\PrimaryController.class
 com\musicstreamer\App.class
-com\musicstreamer\AudioStreamReceiver.class
+com\musicstreamer\PrimaryController$ConnectionState.class
 com\musicstreamer\AudioStreamReceiver$AudioPacket.class

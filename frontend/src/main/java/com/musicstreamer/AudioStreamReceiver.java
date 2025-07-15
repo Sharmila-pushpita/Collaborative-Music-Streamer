@@ -8,8 +8,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.PriorityQueue;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -17,266 +15,256 @@ import javax.sound.sampled.DataLine;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.SourceDataLine;
 
-
 public class AudioStreamReceiver implements Runnable {
-    private static final int BUFFER_SIZE = 4096+32;
-    private static final int JITTER_BUFFER_SIZE = 100; // Increased buffer size
+    private static final int BUFFER_SIZE_BYTES = 4096;
+    private static final int HEADER_SIZE_BYTES = 19;
+    private static final int MAX_PACKET_SIZE = BUFFER_SIZE_BYTES + HEADER_SIZE_BYTES;
     private static final int SAMPLE_RATE = 44100;
     private static final int BITS_PER_SAMPLE = 16;
     private static final int CHANNELS = 2;
-    
+    private static final int FRAME_SIZE = CHANNELS * (BITS_PER_SAMPLE / 8);
+
+    // Jitter Buffer settings
+    private static final int MIN_JITTER_BUFFER_PACKETS = 10;
+    private static final int MAX_JITTER_BUFFER_PACKETS = 250;
+    private static final int TARGET_JITTER_BUFFER_PACKETS = 30; // Start with a modest target
+    private int jitterBufferSize = TARGET_JITTER_BUFFER_PACKETS;
+
     private final int port;
-    private boolean isRunning = false;
+    private volatile boolean isRunning = false;
     private DatagramSocket socket;
-    private BlockingQueue<AudioPacket> jitterBuffer;
-    private byte[] lastGoodPacket;
     private SourceDataLine audioLine;
     private float volume = 1.0f;
-    
-    // Audio format for playback - PCM_SIGNED, little endian (typical for MP3 decoded audio)
+
+    // Packet reordering and jitter buffer
+    private final PriorityQueue<AudioPacket> packetBuffer = new PriorityQueue<>();
+
     private final AudioFormat audioFormat = new AudioFormat(
             AudioFormat.Encoding.PCM_SIGNED,
             SAMPLE_RATE,
             BITS_PER_SAMPLE,
             CHANNELS,
-            CHANNELS * (BITS_PER_SAMPLE / 8), // Frame size in bytes
+            FRAME_SIZE,
             SAMPLE_RATE,
-            false  // Little endian
+            false // Little-endian
     );
-    
+
     public AudioStreamReceiver(int port) {
         this.port = port;
-        this.jitterBuffer = new ArrayBlockingQueue<>(JITTER_BUFFER_SIZE);
-        this.lastGoodPacket = new byte[BUFFER_SIZE];
     }
-    
+
     public void start() {
-        if (!isRunning) {
-            isRunning = true;
-            new Thread(this).start();
-            new Thread(this::processAudio).start();
-        }
+        if (isRunning) return;
+        isRunning = true;
+        new Thread(this::receivePackets).start();
+        new Thread(this::processAudio).start();
     }
-    
+
     public void stop() {
         isRunning = false;
         if (socket != null && !socket.isClosed()) {
             socket.close();
         }
-        if (audioLine != null && audioLine.isOpen()) {
-        audioLine.stop();      // 1) halt playback immediately
-        audioLine.flush();     // 2) throw away anything still queued
-        audioLine.close();     // 3) release the line
+        if (audioLine != null) {
+            audioLine.stop();
+            audioLine.flush();
+            audioLine.close();
+        }
     }
-jitterBuffer.clear();      // optional: drop any packets we cached
 
-    }
-    
-    @Override
-    public void run() {
+    private void receivePackets() {
         try {
             socket = new DatagramSocket(port);
-            byte[] buffer = new byte[BUFFER_SIZE + 32]; // Larger buffer to ensure complete headers
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            
-            System.out.println("AudioStreamReceiver: Waiting for UDP packets on port " + port);
-            
+            byte[] receiveBuffer = new byte[MAX_PACKET_SIZE];
+            DatagramPacket packet = new DatagramPacket(receiveBuffer, receiveBuffer.length);
+
             while (isRunning) {
-                socket.receive(packet);
-                
-                byte[] data = Arrays.copyOf(packet.getData(), packet.getLength());
-                processPacket(data);
-                
-                // Reset the packet
-                packet.setLength(buffer.length);
+                try {
+                    socket.receive(packet);
+                    if (packet.getLength() > HEADER_SIZE_BYTES) {
+                        processReceivedPacket(Arrays.copyOf(packet.getData(), packet.getLength()));
+                    }
+                } catch (SocketException e) {
+                    if (isRunning) System.err.println("Socket error during receive: " + e.getMessage());
+                } catch (IOException e) {
+                    if (isRunning) System.err.println("IO error during receive: " + e.getMessage());
+                }
             }
         } catch (SocketException e) {
-            if (isRunning) {
-                System.err.println("Socket error: " + e.getMessage());
-            }
-        } catch (IOException e) {
-            System.err.println("IO error: " + e.getMessage());
+            System.err.println("Failed to open socket on port " + port + ": " + e.getMessage());
         } finally {
             if (socket != null && !socket.isClosed()) {
                 socket.close();
             }
         }
     }
-    
-    private void processPacket(byte[] data) {
-        if (data.length < 19) return;                    // not even a full header
 
-        ByteBuffer bb = ByteBuffer.wrap(data)
-                                .order(ByteOrder.BIG_ENDIAN);
+    private void processReceivedPacket(byte[] data) {
+        ByteBuffer bb = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
+        long sequenceNumber = bb.getLong();
+        long timestamp = bb.getLong();
+        byte flags = bb.get();
+        int length = bb.getShort() & 0xFFFF;
 
-        long  seq   = bb.getLong();                      // 8 B
-        long  ts    = bb.getLong();                      // 8 B
-        byte  flags = bb.get();                          // 1 B
-        int   len   = bb.getShort() & 0xFFFF;            // 2 B (unsigned)
-
-        if (flags == 0x02) {                             // EOS
-            System.out.println("End-of-stream packet");
-            return;
+        if (length > 0 && bb.remaining() >= length) {
+            byte[] audioData = new byte[length];
+            bb.get(audioData);
+            synchronized (packetBuffer) {
+                packetBuffer.offer(new AudioPacket(sequenceNumber, audioData));
+            }
         }
-
-        if (len > bb.remaining()) {                      // corrupt/truncated
-            System.out.println("Packet " + seq +
-                    " says len=" + len + ", but only " + bb.remaining() + " left");
-            len = bb.remaining();                        // salvage what we have
-        }
-
-        byte[] pcm = new byte[len];
-        bb.get(pcm);
-
-        /* store last good packet for PLC */
-        System.arraycopy(pcm, 0, lastGoodPacket,
-                        0, Math.min(pcm.length, lastGoodPacket.length));
-
-        /* queue for playback */
-        jitterBuffer.offer(new AudioPacket(seq, ts, flags, pcm));
     }
 
-    
     private void processAudio() {
         try {
             initializeAudioLine();
-            
-            PriorityQueue<AudioPacket> playbackQueue = new PriorityQueue<>();
-            long expectedSequence = 0;
-            
-            // Wait a bit before starting playback to allow buffer to fill
-            Thread.sleep(500);
-            
-            System.out.println("AudioStreamReceiver: Starting audio playback");
-            
-            while (isRunning) {
-                // Wait until we have enough packets in the jitter buffer to start playback
-                while (isRunning && playbackQueue.size() < JITTER_BUFFER_SIZE / 4) {
-                    AudioPacket packet = jitterBuffer.poll();
-                    if (packet != null) {
-                        playbackQueue.add(packet);
-                    }
-                    Thread.sleep(2); // Shorter sleep time for more responsive buffering
+        } catch (LineUnavailableException e) {
+            System.err.println("Audio line unavailable: " + e.getMessage());
+            return;
+        }
+
+        long nextSequenceNumber = -1;
+        byte[] lastGoodPacketData = new byte[BUFFER_SIZE_BYTES];
+
+        while (isRunning) {
+            try {
+                // Wait until the buffer is filled to the target level before starting
+                waitForBufferFill();
+
+                AudioPacket currentPacket;
+                synchronized (packetBuffer) {
+                    currentPacket = packetBuffer.poll();
                 }
-                
-                if (!isRunning) break;
-                
-                // Get the next packet to play
-                AudioPacket packet = playbackQueue.poll();
-                
-                if (packet != null) {
-                    // If this is the first packet or a big gap, reset sequence expectations
-                    if (expectedSequence == 0 || packet.sequenceNumber > expectedSequence + 20) {
-                        expectedSequence = packet.sequenceNumber;
-                        System.out.println("AudioStreamReceiver: Starting/Resuming playback at sequence " + expectedSequence);
-                    }
-                    
-                    // Check for packet loss
-                    if (packet.sequenceNumber > expectedSequence) {
-                        // Packet loss detected
-                        long missedPackets = packet.sequenceNumber - expectedSequence;
-                        if (missedPackets > 0 && missedPackets < 10) { // Don't try to fill huge gaps
-                            System.out.println("AudioStreamReceiver: Packet loss detected, missing " + missedPackets + " packets");
-                            // Apply packet loss concealment (repeat last good packet or interpolate)
-                            for (long i = 0; i < missedPackets; i++) {
-                                audioLine.write(lastGoodPacket, 0, lastGoodPacket.length);
-                            }
-                        }
-                    }
-                    
-                    // Apply volume control if needed
-                    byte[] processedAudio = applyVolume(packet.audioData, volume);
-                    
-                    // Play the audio data
-                    audioLine.write(processedAudio, 0, processedAudio.length);
-                    expectedSequence = packet.sequenceNumber + 1;
-                } else {
-                    // If we run out of packets, wait a bit
-                    Thread.sleep(5);
+
+                if (currentPacket == null) {
+                    // Buffer is empty, wait
+                    Thread.sleep(10);
+                    continue;
                 }
-            }
-        } catch (Exception e) {
-            System.err.println("Error in audio processing: " + e.getMessage());
-            e.printStackTrace();
-        } finally {
-            if (audioLine != null && audioLine.isOpen()) {
-                audioLine.close();
+
+                if (nextSequenceNumber == -1) {
+                    // This is the first packet
+                    nextSequenceNumber = currentPacket.sequenceNumber;
+                }
+
+                if (currentPacket.sequenceNumber < nextSequenceNumber) {
+                    // Old packet, discard
+                    continue;
+                }
+
+                if (currentPacket.sequenceNumber > nextSequenceNumber) {
+                    // Packet loss detected
+                    long packetsLost = currentPacket.sequenceNumber - nextSequenceNumber;
+                    System.out.println("Packet loss: " + packetsLost + " packets missing. Seq " + nextSequenceNumber + " to " + (currentPacket.sequenceNumber - 1));
+                    handlePacketLoss(packetsLost, lastGoodPacketData);
+                }
+
+                // We have a good packet
+                byte[] audioData = applyVolume(currentPacket.audioData, volume);
+                audioLine.write(audioData, 0, audioData.length);
+                System.arraycopy(currentPacket.audioData, 0, lastGoodPacketData, 0, currentPacket.audioData.length);
+
+                nextSequenceNumber = currentPacket.sequenceNumber + 1;
+
+                // Dynamically adjust jitter buffer size
+                adjustJitterBuffer();
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
     }
     
+    private void waitForBufferFill() throws InterruptedException {
+        while (isRunning && packetBuffer.size() < jitterBufferSize) {
+            Thread.sleep(10);
+        }
+    }
+
+    private void handlePacketLoss(long packetsLost, byte[] lastPacketData) {
+        // Use a more advanced PLC by stretching the last good packet
+        // For short losses, this sounds better than silence or simple repetition.
+        if (packetsLost > 0 && packetsLost <= 5) { // Conceal up to 5 lost packets
+            System.out.println("Applying PLC for " + packetsLost + " packets.");
+            for (int i = 0; i < packetsLost; i++) {
+                 // Simple time-stretch: play the first half of the last packet, then the second half.
+                 // This is a basic form of time-stretching by repetition.
+                int half = lastPacketData.length / 2;
+                byte[] concealedPacket = new byte[lastPacketData.length];
+                System.arraycopy(lastPacketData, 0, concealedPacket, 0, half);
+                System.arraycopy(lastPacketData, 0, concealedPacket, half, half);
+
+                byte[] processedAudio = applyVolume(concealedPacket, volume);
+                audioLine.write(processedAudio, 0, processedAudio.length);
+            }
+        } else if (packetsLost > 5) {
+            // For longer losses, it's better to insert silence to avoid horrible distortion
+            System.out.println("Gap too large, inserting silence for " + packetsLost + " packets.");
+            byte[] silence = new byte[BUFFER_SIZE_BYTES]; // Already filled with zeros
+            for (int i = 0; i < packetsLost; i++) {
+                audioLine.write(silence, 0, silence.length);
+            }
+        }
+    }
+
+    private void adjustJitterBuffer() {
+        synchronized (packetBuffer) {
+            if (packetBuffer.size() > jitterBufferSize + 20 && jitterBufferSize > MIN_JITTER_BUFFER_PACKETS) {
+                // Buffer is growing, we can reduce latency
+                jitterBufferSize = Math.max(MIN_JITTER_BUFFER_PACKETS, jitterBufferSize - 10);
+            } else if (packetBuffer.size() < jitterBufferSize - 10 && jitterBufferSize < MAX_JITTER_BUFFER_PACKETS) {
+                // Buffer is shrinking, we need to increase it to avoid underruns
+                jitterBufferSize = Math.min(MAX_JITTER_BUFFER_PACKETS, jitterBufferSize + 10);
+            }
+        }
+    }
+
     private void initializeAudioLine() throws LineUnavailableException {
-        // Set up the audio output line
         DataLine.Info info = new DataLine.Info(SourceDataLine.class, audioFormat);
-        
         if (!AudioSystem.isLineSupported(info)) {
-            System.err.println("AudioStreamReceiver: Audio format not supported by system!");
-            
-            // Try a fallback format
-            AudioFormat fallbackFormat = new AudioFormat(
-                    44100,     // Sample rate
-                    16,        // Sample size in bits
-                    2,         // Channels
-                    true,      // Signed
-                    false      // Little endian
-            );
-            
-            info = new DataLine.Info(SourceDataLine.class, fallbackFormat);
-            if (!AudioSystem.isLineSupported(info)) {
-                throw new LineUnavailableException("No compatible audio output format available");
-            }
+            throw new LineUnavailableException("Audio format not supported: " + audioFormat);
         }
-        
         audioLine = (SourceDataLine) AudioSystem.getLine(info);
-        audioLine.open(audioFormat);
+        // Use a larger audio line buffer to prevent underruns at the OS level
+        audioLine.open(audioFormat, (BUFFER_SIZE_BYTES * 10));
         audioLine.start();
-        
-        System.out.println("AudioStreamReceiver: Audio line initialized with format: " + audioFormat);
-        System.out.println("AudioStreamReceiver: Buffer size: " + audioLine.getBufferSize() + " bytes");
+        System.out.println("Audio line initialized with buffer size: " + audioLine.getBufferSize() + " bytes.");
     }
-    
+
     public void setVolume(float volume) {
         this.volume = Math.max(0.0f, Math.min(1.0f, volume));
     }
-    
+
     private byte[] applyVolume(byte[] audioData, float volume) {
-        // If volume is 1.0, return the original array
-        if (volume == 1.0f) {
+        if (Math.abs(volume - 1.0f) < 0.01f) {
             return audioData;
         }
-        
-        byte[] processedData = Arrays.copyOf(audioData, audioData.length);
-        
-        // For 16-bit audio (2 bytes per sample)
-        for (int i = 0; i < processedData.length - 1; i += 2) {
-            // Convert bytes to short (16-bit sample)
-            short sample = (short) ((processedData[i] & 0xFF) | (processedData[i + 1] << 8));
-            
-            // Apply volume
+        byte[] processedData = new byte[audioData.length];
+        for (int i = 0; i < audioData.length - 1; i += 2) {
+            short sample = (short) ((audioData[i] & 0xFF) | (audioData[i + 1] << 8));
             sample = (short) (sample * volume);
-            
-            // Convert back to bytes
             processedData[i] = (byte) (sample & 0xFF);
             processedData[i + 1] = (byte) ((sample >> 8) & 0xFF);
         }
-        
         return processedData;
     }
     
-    // Class representing an audio packet with custom protocol fields
+    @Override
+    public void run() {
+        // This run method is now a fallback, the main logic is in receivePackets and processAudio
+        System.out.println("Starting AudioStreamReceiver...");
+        start();
+    }
+
     private static class AudioPacket implements Comparable<AudioPacket> {
         private final long sequenceNumber;
-        private final long timestamp;
-        private final byte flags;
         private final byte[] audioData;
-        
-        public AudioPacket(long sequenceNumber, long timestamp, byte flags, byte[] audioData) {
+
+        public AudioPacket(long sequenceNumber, byte[] audioData) {
             this.sequenceNumber = sequenceNumber;
-            this.timestamp = timestamp;
-            this.flags = flags;
             this.audioData = audioData;
         }
-        
+
         @Override
         public int compareTo(AudioPacket other) {
             return Long.compare(this.sequenceNumber, other.sequenceNumber);

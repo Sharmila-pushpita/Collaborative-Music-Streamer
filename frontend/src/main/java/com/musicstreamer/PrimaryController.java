@@ -8,17 +8,20 @@ import java.net.Socket;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
-import javafx.application.Platform;
-import javafx.fxml.FXML;
-import javafx.scene.control.Button;
-import javafx.scene.control.Label;
-import javafx.scene.control.ListView;
-import javafx.scene.control.ProgressBar;
-import javafx.scene.control.Slider;
-import javafx.scene.control.TextField;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import javafx.application.Platform;
+import javafx.fxml.FXML;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Alert.AlertType;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
+import javafx.scene.control.Slider;
+import javafx.scene.control.TextField;
+
 
 public class PrimaryController {
 
@@ -32,38 +35,49 @@ public class PrimaryController {
     private ListView<String> playlistView;
     
     @FXML
-    private Button playPauseButton;
+    private Button playStopButton;
     
     @FXML
     private Slider volumeSlider;
     
     @FXML
-    private ProgressBar progressBar;
+    private Label volumeLabel;
     
     @FXML
-    private Label timeLabel;
+    private Label connectionStatusLabel;
+    
+    @FXML
+    private Label playlistCountLabel;
+    
+    @FXML
+    private Button addSongButton;
 
     private Socket socket;
     private PrintWriter out;
     private BufferedReader in;
     private AudioStreamReceiver audioReceiver;
-    private final int UDP_PORT = 54321;
-    private boolean isPlaying = false;
+    private boolean isConnected = false;
+    private boolean isServerConnected = false;
     private ScheduledExecutorService executorService;
 
     @FXML
     public void initialize() {
         // Initialize UI elements
-        volumeSlider.setValue(100);
-        progressBar.setProgress(0);
-        timeLabel.setText("0:00 / 0:00");
+        volumeSlider.setValue(80);
+        volumeLabel.setText("80%");
+        updateConnectionStatus(ConnectionState.DISCONNECTED);
+        nowPlayingLabel.setText("Waiting for stream...");
+        playStopButton.setText("► Connect");
+        playStopButton.getStyleClass().add("play-button");
+        playStopButton.setDisable(false);
+        updatePlaylistCount(0);
         
         // Setup audio receiver
-        audioReceiver = new AudioStreamReceiver(UDP_PORT);
+        audioReceiver = new AudioStreamReceiver(5555);
         
-        // Add volume slider listener
+        // Add volume slider listener for local volume control
         volumeSlider.valueProperty().addListener((observable, oldValue, newValue) -> {
-            handleVolumeChange();
+            handleVolumeChange(newValue.doubleValue());
         });
         
         // Start network connections in background thread
@@ -73,75 +87,145 @@ public class PrimaryController {
         executorService = Executors.newSingleThreadScheduledExecutor();
     }
 
+    private enum ConnectionState {
+        DISCONNECTED, CONNECTING, CONNECTED, PLAYING
+    }
+
+    private void updateConnectionStatus(ConnectionState state) {
+        Platform.runLater(() -> {
+            // Clear all status classes
+            connectionStatusLabel.getStyleClass().removeAll("status-connected", "status-disconnected", "status-connecting");
+            
+            switch (state) {
+                case DISCONNECTED:
+                    connectionStatusLabel.setText("● Disconnected");
+                    connectionStatusLabel.getStyleClass().add("status-disconnected");
+                    break;
+                case CONNECTING:
+                    connectionStatusLabel.setText("● Connecting...");
+                    connectionStatusLabel.getStyleClass().add("status-connecting");
+                    break;
+                case CONNECTED:
+                    connectionStatusLabel.setText("● Connected");
+                    connectionStatusLabel.getStyleClass().add("status-connecting");
+                    break;
+                case PLAYING:
+                    connectionStatusLabel.setText("● Playing");
+                    connectionStatusLabel.getStyleClass().add("status-connected");
+                    break;
+            }
+        });
+    }
+
+    private void updatePlaylistCount(int count) {
+        Platform.runLater(() -> {
+            playlistCountLabel.setText(count + " song" + (count == 1 ? "" : "s"));
+        });
+    }
+
     private void connectToServer() {
+        updateConnectionStatus(ConnectionState.CONNECTING);
+        
         try {
             socket = new Socket("localhost", 9090);
             out = new PrintWriter(socket.getOutputStream(), true);
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
-            // Send SUBSCRIBE command with our UDP port
-            out.println("SUBSCRIBE " + UDP_PORT);
             
-            // Start audio receiver
-            audioReceiver.start();
-
-            // Listen for server responses
-            String serverResponse;
-            while ((serverResponse = in.readLine()) != null) {
-                final String response = serverResponse;
-                Platform.runLater(() -> updateUI(response));
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
+            isServerConnected = true;
             Platform.runLater(() -> {
-                nowPlayingLabel.setText("Disconnected from server.");
-                playPauseButton.setDisable(true);
+                playStopButton.setDisable(false);
+                addSongButton.setDisable(false);
             });
-        } finally {
-            if (audioReceiver != null) {
-                audioReceiver.stop();
-            }
-            if (executorService != null) {
-                executorService.shutdown();
-            }
+            updateConnectionStatus(ConnectionState.CONNECTED);
+            
+            // Subscribe to UDP stream
+            out.println("SUBSCRIBE 5555");
+            
+            // Start listening for server messages
+            startListening();
+            
+        } catch (IOException e) {
+            System.err.println("Could not connect to server: " + e.getMessage());
+            Platform.runLater(() -> {
+                playStopButton.setDisable(true);
+                addSongButton.setDisable(true);
+            });
+            updateConnectionStatus(ConnectionState.DISCONNECTED);
         }
     }
 
+    private void startListening() {
+        new Thread(() -> {
+            try {
+                String line;
+                while ((line = in.readLine()) != null) {
+                    handleServerMessage(line);
+                }
+            } catch (IOException e) {
+                System.err.println("Connection to server lost: " + e.getMessage());
+                Platform.runLater(() -> {
+                    isServerConnected = false;
+                    playStopButton.setDisable(true);
+                    addSongButton.setDisable(true);
+                });
+                updateConnectionStatus(ConnectionState.DISCONNECTED);
+            }
+        }).start();
+    }
+
     @FXML
-    private void download() {
+    private void addSong() {
         String url = youtubeUrlField.getText();
-        if (url != null && !url.isEmpty()) {
-            out.println("DOWNLOAD " + url);
-            youtubeUrlField.clear();
+        if (url == null || url.trim().isEmpty()) {
+            showAlert("Error", "URL cannot be empty.", AlertType.ERROR);
+            return;
         }
+
+        // Send URL directly to server (no validation)
+        out.println("DOWNLOAD " + url);
+        youtubeUrlField.clear();
     }
     
     @FXML
-    private void togglePlayPause() {
-        if (isPlaying) {
-            out.println("PAUSE");
-            playPauseButton.setText("Play");
+    private void togglePlayStop() {
+        if (!isServerConnected) {
+            return;
+        }
+        
+        if (isConnected) {
+            // Disconnect from radio stream
+            audioReceiver.stop();
+            isConnected = false;
+            playStopButton.setText("► Connect");
+            playStopButton.getStyleClass().removeAll("play-button", "stop-button");
+            playStopButton.getStyleClass().add("play-button");
+            updateConnectionStatus(ConnectionState.CONNECTED);
+            nowPlayingLabel.setText("Disconnected from stream");
         } else {
-            out.println("PLAY");
-            playPauseButton.setText("Pause");
+            // Connect to radio stream
+            audioReceiver.start();
+            isConnected = true;
+            playStopButton.setText("■ Disconnect");
+            playStopButton.getStyleClass().removeAll("play-button", "stop-button");
+            playStopButton.getStyleClass().add("stop-button");
+            updateConnectionStatus(ConnectionState.PLAYING);
+            
+            // Request current playing info
+            out.println("STATUS");
         }
-        isPlaying = !isPlaying;
     }
     
-    @FXML
-    private void skipTrack() {
-        out.println("SKIP");
-    }
-    
-    private void handleVolumeChange() {
-        double volume = volumeSlider.getValue() / 100.0;
-        // Send volume command to server for global volume control
-        if (out != null) {
-            out.println("VOLUME " + volume);
+    private void handleVolumeChange(double volume) {
+        // Local volume control (not server-side)
+        volumeLabel.setText(String.format("%.0f%%", volume));
+        
+        // Apply volume to audio receiver
+        if (audioReceiver != null) {
+            audioReceiver.setVolume((float) (volume / 100.0));
         }
     }
 
-    private void updateUI(String jsonResponse) {
+    private void handleServerMessage(String jsonResponse) {
         try {
             JSONObject json = new JSONObject(jsonResponse);
             
@@ -150,57 +234,85 @@ public class PrimaryController {
                 
                 // Update now playing
                 JSONObject nowPlaying = payload.optJSONObject("now_playing");
-                if (nowPlaying != null && !nowPlaying.equals(JSONObject.NULL)) {
-                    String title = nowPlaying.getString("title");
-                    double duration = nowPlaying.optDouble("duration", 0);
-                    nowPlayingLabel.setText(title);
-                    
-                    // Format duration as mm:ss
-                    int minutes = (int) (duration / 60);
-                    int seconds = (int) (duration % 60);
-                    timeLabel.setText("0:00 / " + String.format("%d:%02d", minutes, seconds));
-                } else {
-                    nowPlayingLabel.setText("-");
-                    timeLabel.setText("0:00 / 0:00");
-                }
+                Platform.runLater(() -> {
+                    if (nowPlaying != null && !nowPlaying.equals(JSONObject.NULL)) {
+                        String title = nowPlaying.getString("title");
+                        nowPlayingLabel.setText("♫ " + title);
+                    } else {
+                        nowPlayingLabel.setText("No songs in playlist");
+                    }
+                });
                 
                 // Update playlist
                 JSONArray queue = payload.getJSONArray("queue");
-                playlistView.getItems().clear();
-                for (int i = 0; i < queue.length(); i++) {
-                    JSONObject song = queue.getJSONObject(i);
-                    playlistView.getItems().add(song.getString("title"));
-                }
-                
-                // Enable/disable controls based on playlist state
-                boolean hasContent = queue.length() > 0;
-                playPauseButton.setDisable(!hasContent);
+                Platform.runLater(() -> {
+                    playlistView.getItems().clear();
+                    for (int i = 0; i < queue.length(); i++) {
+                        JSONObject song = queue.getJSONObject(i);
+                        String songTitle = song.getString("title");
+                        boolean isCurrentlyPlaying = song.optBoolean("isPlaying", false);
+                        
+                        // Add visual indicators for different states
+                        if (isCurrentlyPlaying) {
+                            playlistView.getItems().add("♫ " + songTitle + " • Now Playing");
+                        } else {
+                            playlistView.getItems().add("♪ " + songTitle);
+                        }
+                    }
+                    updatePlaylistCount(queue.length());
+                });
             } else if (json.getString("type").equals("PLAYBACK_STATE")) {
                 JSONObject payload = json.getJSONObject("payload");
-                boolean playing = payload.getBoolean("playing");
-                double progress = payload.getDouble("progress");
                 
-                isPlaying = playing;
-                playPauseButton.setText(playing ? "Pause" : "Play");
-                progressBar.setProgress(progress);
-                
-                // Update time label with current position
-                if (payload.has("currentTime") && payload.has("duration")) {
-                    double currentTime = payload.getDouble("currentTime");
-                    double duration = payload.getDouble("duration");
-                    
-                    // Format as mm:ss
-                    int currentMinutes = (int) (currentTime / 60);
-                    int currentSeconds = (int) (currentTime % 60);
-                    int totalMinutes = (int) (duration / 60);
-                    int totalSeconds = (int) (duration % 60);
-                    
-                    timeLabel.setText(
-                        String.format("%d:%02d / %d:%02d", 
-                            currentMinutes, currentSeconds, 
-                            totalMinutes, totalSeconds)
-                    );
+                // Update current song info if connected
+                if (isConnected && payload.has("currentSong")) {
+                    String currentSong = payload.getString("currentSong");
+                    Platform.runLater(() -> {
+                        nowPlayingLabel.setText("♫ " + currentSong);
+                    });
                 }
+                
+                // Update radio status
+                if (payload.has("radioActive")) {
+                    boolean radioActive = payload.getBoolean("radioActive");
+                    if (!radioActive && isConnected) {
+                        Platform.runLater(() -> {
+                            nowPlayingLabel.setText("Radio is currently offline");
+                        });
+                    }
+                }
+            } else if (json.getString("type").equals("DOWNLOAD_COMPLETE")) {
+                // Success message
+                Platform.runLater(() -> {
+                    connectionStatusLabel.setText("✓ Song added");
+                    connectionStatusLabel.getStyleClass().removeAll("status-connected", "status-disconnected", "status-connecting");
+                    connectionStatusLabel.getStyleClass().add("status-connected");
+                    
+                    // Reset status after 2 seconds
+                    executorService.schedule(() -> {
+                        Platform.runLater(() -> {
+                            if (isServerConnected) {
+                                updateConnectionStatus(isConnected ? ConnectionState.PLAYING : ConnectionState.CONNECTED);
+                            }
+                        });
+                    }, 2, java.util.concurrent.TimeUnit.SECONDS);
+                });
+            } else if (json.getString("type").equals("DOWNLOAD_ERROR")) {
+                // Error adding song
+                Platform.runLater(() -> {
+                    connectionStatusLabel.setText("✗ Failed to add song");
+                    connectionStatusLabel.getStyleClass().removeAll("status-connected", "status-disconnected", "status-connecting");
+                    connectionStatusLabel.getStyleClass().add("status-disconnected");
+                    
+                    // Reset status after 3 seconds
+                    executorService.schedule(() -> {
+                        Platform.runLater(() -> {
+                            if (isServerConnected) {
+                                updateConnectionStatus(isConnected ? ConnectionState.PLAYING : ConnectionState.CONNECTED);
+                            }
+                        });
+                    }, 3, java.util.concurrent.TimeUnit.SECONDS);
+                });
             }
         } catch (JSONException e) {
             System.out.println("Error parsing server response: " + jsonResponse);
@@ -222,5 +334,15 @@ public class PrimaryController {
                 e.printStackTrace();
             }
         }
+    }
+
+    private void showAlert(String title, String content, AlertType alertType) {
+        Platform.runLater(() -> {
+            Alert alert = new Alert(alertType);
+            alert.setTitle(title);
+            alert.setHeaderText(null);
+            alert.setContentText(content);
+            alert.showAndWait();
+        });
     }
 }

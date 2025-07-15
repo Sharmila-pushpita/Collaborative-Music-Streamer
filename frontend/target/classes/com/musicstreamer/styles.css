@@ -1,0 +1,435 @@
+/* ========================================
+   COLLABORATIVE MUSIC RADIO - VIBRANT THEME
+   ======================================== */
+
+/* Root color scheme */
+.root {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #2c3e50, #3498db, #9b59b6);
+    -fx-font-family: "Segoe UI", "Roboto", "San Francisco", sans-serif;
+    -fx-font-size: 14px;
+    -fx-text-fill: #ffffff;
+}
+
+/* ScrollPane styling */
+.main-scroll-pane {
+    -fx-background-color: transparent;
+    -fx-background: transparent;
+}
+
+.main-scroll-pane > .viewport {
+    -fx-background-color: transparent;
+}
+
+/* Main container */
+.main-container {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #667eea, #764ba2, #f093fb, #f5576c, #4facfe);
+    -fx-padding: 25px;
+}
+
+/* Header section */
+.header-section {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #feca57, #48dbfb, #ff9ff3, #54a0ff);
+    -fx-background-radius: 20px;
+    -fx-padding: 25px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.4), 15, 0, 0, 3);
+}
+
+.header-title {
+    -fx-font-size: 32px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.8), 3, 0, 0, 2);
+}
+
+/* Input section */
+.input-section {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #667eea, #764ba2);
+    -fx-background-radius: 15px;
+    -fx-padding: 20px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.3), 10, 0, 0, 2);
+}
+
+.url-input {
+    -fx-background-color: #ffffff;
+    -fx-text-fill: #2c3e50;
+    -fx-prompt-text-fill: #7f8c8d;
+    -fx-background-radius: 12px;
+    -fx-border-radius: 12px;
+    -fx-border-color: #3498db;
+    -fx-border-width: 2px;
+    -fx-padding: 15px 20px;
+    -fx-font-size: 16px;
+    -fx-font-weight: bold;
+    -fx-pref-height: 50px;
+}
+
+.url-input:focused {
+    -fx-border-color: #feca57;
+    -fx-border-width: 3px;
+    -fx-background-color: #f8f9fa;
+    -fx-text-fill: #2c3e50;
+    -fx-effect: dropshadow(gaussian, rgba(254, 202, 87, 0.5), 10, 0, 0, 0);
+}
+
+/* Buttons */
+.modern-button {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #feca57, #ff6b6b);
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: bold;
+    -fx-font-size: 16px;
+    -fx-background-radius: 12px;
+    -fx-border-radius: 12px;
+    -fx-padding: 15px 25px;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.3), 8, 0, 0, 2);
+}
+
+.modern-button:hover {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #feca57);
+    -fx-effect: dropshadow(gaussian, rgba(255, 107, 107, 0.5), 12, 0, 0, 3);
+    -fx-scale-x: 1.1;
+    -fx-scale-y: 1.1;
+}
+
+.modern-button:pressed {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ee5a52, #f39c12);
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 6, 0, 0, 1);
+    -fx-scale-x: 0.95;
+    -fx-scale-y: 0.95;
+}
+
+/* MAIN PLAY/STOP BUTTON - HERO ELEMENT */
+.play-button {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #00f2fe, #4facfe);
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: bold;
+    -fx-font-size: 28px;
+    -fx-background-radius: 25px;
+    -fx-border-radius: 25px;
+    -fx-padding: 30px 50px;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.4), 15, 0, 0, 5);
+    -fx-min-width: 250px;
+    -fx-min-height: 80px;
+}
+
+.play-button:hover {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #4facfe, #00f2fe);
+    -fx-effect: dropshadow(gaussian, rgba(79, 172, 254, 0.6), 20, 0, 0, 8);
+    -fx-scale-x: 1.15;
+    -fx-scale-y: 1.15;
+}
+
+.play-button:pressed {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #2980b9, #3498db);
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 10, 0, 0, 3);
+    -fx-scale-x: 1.05;
+    -fx-scale-y: 1.05;
+}
+
+.stop-button {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #ff5252);
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: bold;
+    -fx-font-size: 28px;
+    -fx-background-radius: 25px;
+    -fx-border-radius: 25px;
+    -fx-padding: 30px 50px;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.4), 15, 0, 0, 5);
+    -fx-min-width: 250px;
+    -fx-min-height: 80px;
+}
+
+.stop-button:hover {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff5252, #ff6b6b);
+    -fx-effect: dropshadow(gaussian, rgba(255, 107, 107, 0.6), 20, 0, 0, 8);
+    -fx-scale-x: 1.15;
+    -fx-scale-y: 1.15;
+}
+
+.stop-button:pressed {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #e53935, #f44336);
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 10, 0, 0, 3);
+    -fx-scale-x: 1.05;
+    -fx-scale-y: 1.05;
+}
+
+/* Now Playing section */
+.now-playing-section {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #667eea, #764ba2);
+    -fx-background-radius: 18px;
+    -fx-padding: 25px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.3), 12, 0, 0, 3);
+}
+
+.now-playing-title {
+    -fx-font-size: 22px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.8), 2, 0, 0, 1);
+}
+
+.now-playing-song {
+    -fx-font-size: 18px;
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: 500;
+    -fx-wrap-text: true;
+    -fx-padding: 10px 0;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 1, 0, 0, 1);
+}
+
+/* Control section */
+.control-section {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #f093fb, #f5576c);
+    -fx-background-radius: 18px;
+    -fx-padding: 25px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.3), 12, 0, 0, 3);
+}
+
+/* Volume control */
+.volume-section {
+    -fx-spacing: 20px;
+    -fx-alignment: center-left;
+}
+
+.volume-label {
+    -fx-font-size: 18px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.8), 1, 0, 0, 1);
+}
+
+.volume-slider {
+    -fx-pref-width: 250px;
+    -fx-pref-height: 25px;
+}
+
+.volume-slider .track {
+    -fx-background-color: rgba(255, 255, 255, 0.3);
+    -fx-background-radius: 15px;
+    -fx-border-radius: 15px;
+    -fx-pref-height: 12px;
+}
+
+.volume-slider .thumb {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #feca57, #ff6b6b);
+    -fx-background-radius: 15px;
+    -fx-border-radius: 15px;
+    -fx-pref-width: 25px;
+    -fx-pref-height: 25px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.3), 6, 0, 0, 2);
+}
+
+.volume-slider .thumb:hover {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #feca57);
+    -fx-effect: dropshadow(gaussian, rgba(255, 107, 107, 0.5), 8, 0, 0, 3);
+    -fx-scale-x: 1.2;
+    -fx-scale-y: 1.2;
+}
+
+.volume-percentage {
+    -fx-font-size: 16px;
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: bold;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.8), 1, 0, 0, 1);
+}
+
+/* Status indicator */
+.status-indicator {
+    -fx-font-size: 16px;
+    -fx-font-weight: bold;
+    -fx-padding: 12px 18px;
+    -fx-background-radius: 25px;
+    -fx-border-radius: 25px;
+}
+
+.status-connected {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #2ed573, #7bed9f);
+    -fx-border-color: #ffffff;
+    -fx-border-width: 2px;
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(46, 213, 115, 0.4), 8, 0, 0, 2);
+}
+
+.status-disconnected {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #ff5252);
+    -fx-border-color: #ffffff;
+    -fx-border-width: 2px;
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(255, 107, 107, 0.4), 8, 0, 0, 2);
+}
+
+.status-connecting {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #feca57, #ff9ff3);
+    -fx-border-color: #ffffff;
+    -fx-border-width: 2px;
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(254, 202, 87, 0.4), 8, 0, 0, 2);
+}
+
+/* Playlist section */
+.playlist-section {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #4facfe, #00f2fe);
+    -fx-background-radius: 18px;
+    -fx-padding: 25px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.3), 12, 0, 0, 3);
+}
+
+.playlist-title {
+    -fx-font-size: 22px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #ffffff;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.8), 2, 0, 0, 1);
+}
+
+.playlist-view {
+    -fx-background-color: rgba(255, 255, 255, 0.95);
+    -fx-background-radius: 12px;
+    -fx-border-radius: 12px;
+    -fx-border-color: rgba(255, 255, 255, 0.4);
+    -fx-border-width: 2px;
+    -fx-effect: innershadow(gaussian, rgba(0, 0, 0, 0.2), 4, 0, 0, 1);
+}
+
+.playlist-view .list-cell {
+    -fx-background-color: transparent;
+    -fx-text-fill: #2c3e50;
+    -fx-padding: 15px 20px;
+    -fx-font-size: 16px;
+    -fx-font-weight: 500;
+    -fx-border-color: rgba(44, 62, 80, 0.1);
+    -fx-border-width: 0 0 1px 0;
+    -fx-border-style: solid;
+}
+
+.playlist-view .list-cell:hover {
+    -fx-background-color: rgba(52, 152, 219, 0.2);
+    -fx-text-fill: #2c3e50;
+    -fx-effect: dropshadow(gaussian, rgba(52, 152, 219, 0.3), 4, 0, 0, 0);
+}
+
+.playlist-view .list-cell:selected {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #feca57);
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: bold;
+    -fx-effect: dropshadow(gaussian, rgba(255, 107, 107, 0.4), 6, 0, 0, 2);
+}
+
+.playlist-view .list-cell:filled:selected:focused {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #feca57, #ff6b6b);
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: bold;
+}
+
+.playlist-view .list-cell:empty {
+    -fx-background-color: transparent;
+}
+
+/* Scrollbar styling */
+.scroll-bar:vertical, .scroll-bar:horizontal {
+    -fx-background-color: rgba(0, 0, 0, 0.25);
+    -fx-background-radius: 12px;
+    -fx-padding: 5px;
+}
+
+.scroll-bar:vertical {
+    -fx-pref-width: 18px;
+}
+
+.scroll-bar:horizontal {
+    -fx-pref-height: 18px;
+}
+
+.scroll-bar .track {
+    -fx-background-color: transparent;
+    -fx-background-radius: 12px;
+    -fx-border-radius: 12px;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #feca57);
+    -fx-background-radius: 10px;
+    -fx-border-radius: 10px;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #feca57, #ff6b6b);
+}
+
+.playlist-view .scroll-bar:vertical {
+    -fx-background-color: rgba(255, 255, 255, 0.1);
+    -fx-background-radius: 10px;
+    -fx-pref-width: 15px;
+}
+
+.playlist-view .scroll-bar:vertical .track {
+    -fx-background-color: rgba(255, 255, 255, 0.1);
+    -fx-background-radius: 10px;
+    -fx-border-radius: 10px;
+}
+
+.playlist-view .scroll-bar:vertical .thumb {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #ff6b6b, #feca57);
+    -fx-background-radius: 8px;
+    -fx-border-radius: 8px;
+}
+
+.playlist-view .scroll-bar:vertical .thumb:hover {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #feca57, #ff6b6b);
+    -fx-effect: dropshadow(gaussian, rgba(255, 107, 107, 0.5), 6, 0, 0, 2);
+}
+
+/* Hover animations */
+.animated-hover {
+    -fx-cursor: hand;
+}
+
+.animated-hover:hover {
+    -fx-effect: dropshadow(gaussian, rgba(255, 255, 255, 0.3), 8, 0, 0, 0);
+}
+
+/* Focus rings */
+.text-field:focused,
+.button:focused,
+.slider:focused {
+    -fx-effect: dropshadow(gaussian, rgba(255, 255, 255, 0.5), 0, 0, 0, 0), innershadow(gaussian, rgba(255, 255, 255, 0.3), 0, 0, 0, 0);
+}
+
+/* Tooltips */
+.tooltip {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #667eea, #764ba2);
+    -fx-text-fill: #ffffff;
+    -fx-background-radius: 10px;
+    -fx-border-radius: 10px;
+    -fx-border-color: #ffffff;
+    -fx-border-width: 1px;
+    -fx-font-size: 14px;
+    -fx-padding: 12px 16px;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.4), 10, 0, 0, 3);
+}
+
+/* Bottom section */
+.bottom-section {
+    -fx-background-color: linear-gradient(from 0% 0% to 100% 100%, #667eea, #764ba2);
+    -fx-padding: 18px 25px;
+}
+
+/* Responsive design adjustments */
+@media (max-width: 600px) {
+    .header-title {
+        -fx-font-size: 28px;
+    }
+    
+    .modern-button {
+        -fx-font-size: 14px;
+        -fx-padding: 12px 20px;
+    }
+    
+    .play-button {
+        -fx-font-size: 24px;
+        -fx-padding: 25px 40px;
+        -fx-min-width: 200px;
+        -fx-min-height: 70px;
+    }
+} 

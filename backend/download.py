@@ -1,7 +1,6 @@
 import sys
 import subprocess
 import os
-import shutil
 
 def download_audio(youtube_url):
     """
@@ -11,40 +10,52 @@ def download_audio(youtube_url):
         youtube_url: The URL of the YouTube video.
     """
     try:
-        # Use the local yt-dlp executable in the backend directory
-        yt_dlp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yt-dlp")
-        
-        # Make sure it's executable
-        os.chmod(yt_dlp_path, 0o755)
-        
-        # Find ffmpeg path
-        ffmpeg_path = shutil.which("ffmpeg")
-        if not ffmpeg_path:
-            print("Warning: ffmpeg not found in PATH. Will try using default location.")
-            ffmpeg_path = "/usr/bin/ffmpeg"  # Standard location on Ubuntu
-        
         # Create downloads directory if it doesn't exist
         download_dir = "downloaded_audios"
         os.makedirs(download_dir, exist_ok=True)
         
+        # Build command - use yt-dlp directly from PATH
         command = [
-            yt_dlp_path,
-            '-x',
+            'yt-dlp',
+            '-x',  # Extract audio only
             '--audio-format', 'mp3',
-            '--ffmpeg-location', ffmpeg_path,
+            '--audio-quality', '0',  # Best quality
             '-o', 'downloaded_audios/%(title)s.%(ext)s',
+            '--no-playlist',  # Only download single video, not playlist
+            '--embed-metadata',  # Embed metadata
             youtube_url
         ]
-        print(f"Executing command: {' '.join(command)}")
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        print("Download successful!")
-        print(result.stdout)
-    except FileNotFoundError:
-        print("Error: yt-dlp is not installed or not in your PATH.")
-        print("Please install yt-dlp: https://github.com/yt-dlp/yt-dlp")
+        
+        print(f"Downloading: {youtube_url}")
+        print(f"Command: {' '.join(command)}")
+        
+        # Run the command
+        result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        print("[SUCCESS] Download completed successfully!")
+        if result.stdout:
+            print("Output:")
+            print(result.stdout)
+            
+    except FileNotFoundError as e:
+        print(f"[ERROR] yt-dlp not found in PATH: {e}")
+        print("Please install yt-dlp: pip install yt-dlp")
+        sys.exit(1)
+        
     except subprocess.CalledProcessError as e:
-        print(f"Error downloading audio: {e}")
-        print(e.stderr)
+        print(f"[ERROR] Download failed (exit code {e.returncode})")
+        if e.stderr:
+            print("Error details:")
+            print(e.stderr)
+        if e.stdout:
+            print("Output:")
+            print(e.stdout)
+        sys.exit(1)
+        
+    except Exception as e:
+        print(f"[ERROR] Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
@@ -52,3 +63,4 @@ if __name__ == '__main__':
         download_audio(url)
     else:
         print("Usage: python download.py <youtube_url>")
+        sys.exit(1)
