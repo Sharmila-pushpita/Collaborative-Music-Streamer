@@ -24,9 +24,9 @@
                 <VBox spacing="25.0">
                     <children>
                         <!-- Header Section -->
-                        <VBox styleClass="header-section">
+                        <VBox styleClass="header-section" alignment="CENTER">
                             <children>
-                                <Label text="♪ Collaborative Music Radio" styleClass="header-title">
+                                <Label text="♪ Collaborative Music Radio ♪" styleClass="header-title">
                                     <tooltip>
                                         <Tooltip text="Your personal radio station where everyone can add songs!"/>
                                     </tooltip>
