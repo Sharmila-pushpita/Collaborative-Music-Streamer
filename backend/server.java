@@ -37,6 +37,7 @@ public class server {
     private static final PlaylistManager               playlistManager  = new PlaylistManager(AUDIO_DIR);
     private static final ExecutorService               clientExecutor   = Executors.newCachedThreadPool();
     private static final ScheduledExecutorService      scheduler        = Executors.newScheduledThreadPool(1);
+    private static volatile boolean                    songWasManuallyChanged = false; // Flag to handle playlist changes
 
     // Radio state - always playing if there are songs
     private static       boolean isRadioActive   = false;  // Radio is on/off
@@ -83,6 +84,9 @@ public class server {
 
         System.out.println("🎵 Collaborative Music Radio Server is running on port " + TCP_PORT);
         System.out.println("📻 Radio status: " + (isRadioActive ? "ON AIR" : "OFF AIR"));
+
+        // Start console handler for admin commands
+        new Thread(new ConsoleHandler()).start();
     }
 
     /* ---------------------------------------------------------- *
@@ -147,7 +151,6 @@ public class server {
                             System.out.println("🔊 Server volume set to " + (int)(currentVolume * 100) + "%");
                         } catch (NumberFormatException ignored) { }
                     }
-                    // Note: Removed PLAY/PAUSE/SKIP - radio streams continuously
                 }
             } catch (IOException ignored) {
             } finally {
@@ -197,7 +200,63 @@ public class server {
         synchronized boolean hasSongs() { return !list.isEmpty(); }
         synchronized int getSongCount() { return list.size(); }
         synchronized File getCurrentTrack() { return list.isEmpty() ? null : list.get(idx); }
+        synchronized List<File> getPlaylist() { return new ArrayList<>(list); }
         synchronized int getCurrentSongIndex() { return idx; }
+
+        synchronized boolean deleteSong(int songIndex) {
+            if (songIndex < 0 || songIndex >= list.size()) {
+                System.out.println("❌ Invalid song index.");
+                return false;
+            }
+        
+            File songToDelete = list.get(songIndex);
+            String songName = songToDelete.getName();
+            boolean wasCurrentSong = (songIndex == idx);
+        
+            // If deleting the current song, we must switch tracks first to release the file lock.
+            if (wasCurrentSong) {
+                System.out.println("🎵 Current song is playing. Switching to the next track before deleting...");
+                // Note: moveToNextTrack() also calls resetCurrentSong() and updateCurrentTrackDuration()
+                moveToNextTrack();
+                songWasManuallyChanged = true; // Signal the streamer to restart with the new song
+            }
+        
+            // Update the playlist data structure
+            list.remove(songIndex);
+            System.out.println("📋 Removed '" + songName + "' from playlist.");
+        
+            // If a song *before* the current one was deleted, the current index shifts down.
+            if (!wasCurrentSong && songIndex < idx) {
+                idx--;
+            }
+        
+            // If the playlist is now empty, turn off the radio.
+            if (list.isEmpty()) {
+                isRadioActive = false;
+                idx = 0;
+                currentTime = 0;
+                totalDuration = 0;
+                songWasManuallyChanged = true; // Ensure streamer loop stops
+                System.out.println("📻 Playlist is empty. Radio OFF AIR.");
+            }
+        
+            broadcastPlaylistUpdate();
+        
+            // Defer the actual file deletion to give the streamer time to release the file lock.
+            new Thread(() -> {
+                if (wasCurrentSong) {
+                    // Give the streamer a moment to kill the old ffmpeg process.
+                    try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                }
+                if (songToDelete.delete()) {
+                    System.out.println("🗑️ Deleted song file: " + songName);
+                } else {
+                    System.out.println("❌ Failed to delete song file: " + songName + ". It may still be locked.");
+                }
+            }).start();
+        
+            return true; // Logical deletion was successful.
+        }
 
         synchronized void moveToNextTrack() {
             if (!list.isEmpty()) {
@@ -243,19 +302,30 @@ public class server {
                 totalDuration = 180.0; // fallback
             }
         }
+        
+        private String escapeJson(String s) {
+            if (s == null) return null;
+            return s.replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\b", "\\b")
+                    .replace("\f", "\\f")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t");
+        }
 
         synchronized String getPlaylistStateJson() {
             StringBuilder queue = new StringBuilder();
             for (int i = 0; i < list.size(); i++) {
                 File f = list.get(i);
                 queue.append(String.format("{\"title\":\"%s\",\"isPlaying\":%b}",
-                    f.getName(), i == idx));
+                    escapeJson(f.getName()), i == idx));
                 if (i < list.size() - 1) queue.append(",");
             }
             
             String now = list.isEmpty() ? "null" :
                 String.format("{\"title\":\"%s\",\"duration\":%.1f}",
-                              list.get(idx).getName(), totalDuration);
+                              escapeJson(list.get(idx).getName()), totalDuration);
             return String.format("{\"type\":\"PLAYLIST_UPDATE\",\"payload\":{\"queue\":[%s],\"now_playing\":%s}}",
                                  queue, now);
         }
@@ -332,11 +402,17 @@ public class server {
                             break; // Will trigger next track
                         }
 
+                        if (songWasManuallyChanged) {
+                            songWasManuallyChanged = false; // Reset flag
+                            System.out.println("Manual track change detected, restarting stream.");
+                            break;
+                        }
+
                         /* Apply volume in-place */
                         applyVolume(buffer, n, currentVolume);
 
                         /* Build packet: 8 B seq, 8 B timestamp, 1 B flags, 4 B song_index, 2 B len */
-                        long timestamp = System.currentTimeMillis();
+                        long timestamp = (long) currentTime;
                         int songIndex = playlistManager.getCurrentSongIndex();
 
                         ByteArrayOutputStream baos = new ByteArrayOutputStream(n + HEADER_SIZE_BYTES);
@@ -472,14 +548,90 @@ public class server {
         File currentSong = playlistManager.getCurrentTrack();
         String songName = currentSong != null ? currentSong.getName() : "No song";
         
+        // Proper JSON escaping for song names with quotes or backslashes
+        String escapedSongName = songName.replace("\\", "\\\\").replace("\"", "\\\"");
+
         return String.format(
             "{\"type\":\"PLAYBACK_STATE\",\"payload\":{\"playing\":%b,\"volume\":%.2f," +
             "\"progress\":%.3f,\"currentTime\":%.1f,\"duration\":%.1f,\"currentSong\":\"%s\",\"radioActive\":%b}}",
             isRadioActive && isStreamActive, currentVolume,
             totalDuration > 0 ? Math.min(1.0, currentTime / totalDuration) : 0,
-            currentTime, totalDuration, songName, isRadioActive
+            currentTime, totalDuration, escapedSongName, isRadioActive
         );
     }
+
+    /* ---------------------------------------------------------- *
+     *  CONSOLE HANDLER for admin commands
+     * ---------------------------------------------------------- */
+    static class ConsoleHandler implements Runnable {
+        @Override
+        public void run() {
+            BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
+            // Slight delay to ensure server startup messages appear first
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+
+            System.out.println("\n---------------------------------------------------");
+            System.out.println("     SERVER ADMIN CONSOLE IS READY");
+            System.out.println("---------------------------------------------------");
+            System.out.println("Commands: 'list' (show playlist), 'delete' (remove song), 'exit' (shutdown console).");
+
+
+            while (true) {
+                try {
+                    System.out.print("\nadmin> ");
+                    String command = consoleReader.readLine();
+                    if (command == null || command.equalsIgnoreCase("exit")) {
+                        System.out.println("Shutting down admin console.");
+                        break;
+                    }
+
+                    if (command.equalsIgnoreCase("list")) {
+                        printPlaylist();
+                    } else if (command.equalsIgnoreCase("delete")) {
+                        handleDelete(consoleReader);
+                    } else if (!command.trim().isEmpty()) {
+                         System.out.println("Unknown command. Available: 'list', 'delete', 'exit'");
+                    }
+
+                } catch (IOException e) {
+                    System.err.println("Error reading from console: " + e.getMessage());
+                    break;
+                }
+            }
+        }
+
+        private void printPlaylist() {
+            synchronized (playlistManager) {
+                List<File> playlist = playlistManager.getPlaylist();
+                if (playlist.isEmpty()) {
+                    System.out.println("Playlist is empty.");
+                    return;
+                }
+                System.out.println("\n--- Current Playlist ---");
+                for (int i = 0; i < playlist.size(); i++) {
+                    boolean isPlaying = (i == playlistManager.getCurrentSongIndex() && isRadioActive);
+                    System.out.printf("  [%d] %s %s\n", i, playlist.get(i).getName(), isPlaying ? "<- NOW PLAYING" : "");
+                }
+                System.out.println("------------------------");
+            }
+        }
+
+        private void handleDelete(BufferedReader reader) throws IOException {
+             printPlaylist();
+             if (!playlistManager.hasSongs()) return;
+
+             System.out.print("Enter the index of the song to delete: ");
+             try {
+                String indexStr = reader.readLine();
+                if (indexStr == null) return;
+                int index = Integer.parseInt(indexStr.trim());
+                playlistManager.deleteSong(index);
+             } catch (NumberFormatException e) {
+                System.out.println("Invalid number format. Please enter a valid index.");
+             }
+        }
+    }
+
 
     /* ---------------------------------------------------------- *
      *  YT-DLP DOWNLOADER

@@ -70,7 +70,7 @@ public class PrimaryController {
         volumeSlider.setValue(80);
         volumeLabel.setText("80%");
         updateConnectionStatus(ConnectionState.DISCONNECTED);
-        nowPlayingLabel.setText("Waiting for stream...");
+        nowPlayingLabel.setText("Disconnected");
         playStopButton.setText("► Connect");
         playStopButton.getStyleClass().add("play-button");
         playStopButton.setDisable(false);
@@ -208,7 +208,7 @@ public class PrimaryController {
             playStopButton.getStyleClass().removeAll("play-button", "stop-button");
             playStopButton.getStyleClass().add("play-button");
             updateConnectionStatus(ConnectionState.CONNECTED);
-            nowPlayingLabel.setText("Disconnected from stream");
+            nowPlayingLabel.setText(""); // Clear now playing text
         } else {
             // Connect to radio stream
             audioReceiver.start();
@@ -218,8 +218,8 @@ public class PrimaryController {
             playStopButton.getStyleClass().add("stop-button");
             updateConnectionStatus(ConnectionState.PLAYING);
             
-            // Set initial state - will be updated when first packet arrives
-            nowPlayingLabel.setText("Connecting to stream...");
+            // Show buffering status until initial packets are played
+            nowPlayingLabel.setText("Buffering...");
             
             // Request current playing info
             out.println("STATUS");
@@ -246,6 +246,11 @@ public class PrimaryController {
         if (currentSongIndex >= 0 && currentSongIndex != lastKnownSongIndex) {
             lastKnownSongIndex = currentSongIndex;
             updateNowPlayingFromSongIndex(currentSongIndex);
+        }
+
+        // Update buffering status
+        if (audioReceiver.isBuffering()) {
+            Platform.runLater(() -> nowPlayingLabel.setText("Buffering..."));
         }
     }
     
@@ -295,20 +300,6 @@ public class PrimaryController {
             
             if (json.getString("type").equals("PLAYLIST_UPDATE")) {
                 JSONObject payload = json.getJSONObject("payload");
-                
-                // Update now playing only when not connected to stream
-                // When connected, the nowPlayingLabel is controlled by packet-based song index updates
-                if (!isConnected) {
-                    JSONObject nowPlaying = payload.optJSONObject("now_playing");
-                    Platform.runLater(() -> {
-                        if (nowPlaying != null && !nowPlaying.equals(JSONObject.NULL)) {
-                            String title = nowPlaying.getString("title");
-                            nowPlayingLabel.setText("♫ " + title);
-                        } else {
-                            nowPlayingLabel.setText("No songs in playlist");
-                        }
-                    });
-                }
                 
                 // Update playlist
                 JSONArray queue = payload.getJSONArray("queue");

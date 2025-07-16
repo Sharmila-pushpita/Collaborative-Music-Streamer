@@ -8,6 +8,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.PriorityQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -36,6 +38,19 @@ public class AudioStreamReceiver implements Runnable {
     private SourceDataLine audioLine;
     private float volume = 1.0f;
     
+    // Buffering flag: true until jitter buffer is initially filled
+    private volatile boolean buffering = true;
+   
+    // Track when we just connected to reset sequence expectations
+    private volatile boolean justConnected = false;
+   
+    // Track packets processed since reconnection
+    private int packetsProcessedSinceReconnection = 0;
+
+    // Decoupling audio processing from playback
+    private Thread playbackThread;
+    private final BlockingQueue<byte[]> playbackQueue = new LinkedBlockingQueue<>(100); // Buffer for ~2.3s of audio
+
     // Current song tracking
     private volatile int currentSongIndex = -1;
     private volatile boolean songIndexChanged = false;
@@ -59,21 +74,44 @@ public class AudioStreamReceiver implements Runnable {
 
     public void start() {
         if (isRunning) return;
+        
+        try {
+            initializeAudioLine();
+        } catch (LineUnavailableException e) {
+            System.err.println("Audio line unavailable, cannot start playback: " + e.getMessage());
+            return;
+        }
+
         isRunning = true;
+        buffering = true; // Reset buffering state on (re)start
+        justConnected = true; // Mark as just connected
+        
+        // Clear jitter buffer and reset all tracking state on (re)connect
+        synchronized (packetBuffer) {
+            packetBuffer.clear();
+        }
+        currentSongIndex = -1;
+        songIndexChanged = false;
+        packetsProcessedSinceReconnection = 0;
+        
         new Thread(this::receivePackets).start();
         new Thread(this::processAudio).start();
+        playbackThread = new Thread(this::playbackLoop);
+        playbackThread.start();
     }
 
     public void stop() {
         isRunning = false;
+        justConnected = false;
+        
+        if (playbackThread != null) {
+            playbackThread.interrupt();
+        }
+
         if (socket != null && !socket.isClosed()) {
             socket.close();
         }
-        if (audioLine != null) {
-            audioLine.stop();
-            audioLine.flush();
-            audioLine.close();
-        }
+        // audioLine is now closed by the playbackLoop
     }
 
     private void receivePackets() {
@@ -123,14 +161,27 @@ public class AudioStreamReceiver implements Runnable {
         }
     }
 
-    private void processAudio() {
+    private void playbackLoop() {
         try {
-            initializeAudioLine();
-        } catch (LineUnavailableException e) {
-            System.err.println("Audio line unavailable: " + e.getMessage());
-            return;
+            while (isRunning) {
+                // take() blocks until an element is available and is interruptible.
+                byte[] audioData = playbackQueue.take();
+                audioLine.write(audioData, 0, audioData.length);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.out.println("Playback thread was interrupted and is stopping.");
+        } finally {
+            if (audioLine != null) {
+                System.out.println("Draining and closing audio line.");
+                audioLine.drain();
+                audioLine.stop();
+                audioLine.close();
+            }
         }
+    }
 
+    private void processAudio() {
         long nextSequenceNumber = -1;
         byte[] lastGoodPacketData = new byte[BUFFER_SIZE_BYTES];
 
@@ -142,17 +193,40 @@ public class AudioStreamReceiver implements Runnable {
                 AudioPacket currentPacket;
                 synchronized (packetBuffer) {
                     currentPacket = packetBuffer.poll();
+                    // Debug buffer status only for critical situations
+                    if (packetBuffer.size() < 3) {
+                        System.out.println("WARNING: Jitter buffer critically low - " + packetBuffer.size() + " packets remaining");
+                    }
                 }
 
                 if (currentPacket == null) {
                     // Buffer is empty, wait
+                    System.out.println("Buffer empty! Waiting for packets...");
                     Thread.sleep(10);
                     continue;
                 }
 
-                if (nextSequenceNumber == -1) {
-                    // This is the first packet
+                // Detect song change *before* any sequence-number logic
+                if (currentSongIndex != currentPacket.songIndex) {
+                    System.out.println("Song change detected: " + currentSongIndex + " -> " + currentPacket.songIndex);
+                    currentSongIndex = currentPacket.songIndex;
+                    songIndexChanged = true;
+
+                    // Flush any leftover packets from previous song
+                    synchronized (packetBuffer) {
+                        packetBuffer.clear();
+                    }
+
+                    // Reset sequence tracking and packet-loss state
                     nextSequenceNumber = currentPacket.sequenceNumber;
+                    Arrays.fill(lastGoodPacketData, (byte) 0);
+                }
+
+                if (nextSequenceNumber == -1 || justConnected) {
+                    // This is the first packet or we just reconnected
+                    nextSequenceNumber = currentPacket.sequenceNumber;
+                    justConnected = false; // Clear the flag
+                    System.out.println("Starting/restarting with sequence number: " + nextSequenceNumber);
                 }
 
                 if (currentPacket.sequenceNumber < nextSequenceNumber) {
@@ -161,31 +235,41 @@ public class AudioStreamReceiver implements Runnable {
                 }
 
                 if (currentPacket.sequenceNumber > nextSequenceNumber) {
-                    // Packet loss detected
-                    long packetsLost = currentPacket.sequenceNumber - nextSequenceNumber;
-                    System.out.println("Packet loss: " + packetsLost + " packets missing. Seq " + nextSequenceNumber + " to " + (currentPacket.sequenceNumber - 1));
-                    handlePacketLoss(packetsLost, lastGoodPacketData);
-                }
-
-                // Update current song index based on the packet being *played* (not just received)
-                if (currentSongIndex != currentPacket.songIndex) {
-                    currentSongIndex = currentPacket.songIndex;
-                    songIndexChanged = true;
-                    System.out.println("Song index changed (playback) to: " + currentSongIndex);
+                    System.out.println("Packet loss detected through nextSequenceNumber: " + (currentPacket.sequenceNumber - nextSequenceNumber) + " packets missing. Seq " + nextSequenceNumber + " to " + (currentPacket.sequenceNumber - 1));
+                    // Only detect packet loss if we've processed enough packets since reconnection
+                    if (packetsProcessedSinceReconnection >= 10) {
+                        // Packet loss detected
+                        long packetsLost = currentPacket.sequenceNumber - nextSequenceNumber;
+                        System.out.println("Packet loss: " + packetsLost + " packets missing. Seq " + nextSequenceNumber + " to " + (currentPacket.sequenceNumber - 1));
+                        handlePacketLoss(packetsLost, lastGoodPacketData);
+                    } else {
+                        // Still in initial reconnection phase - just update sequence baseline
+                        System.out.println("Initial reconnection phase - updating sequence baseline from " + nextSequenceNumber + " to " + currentPacket.sequenceNumber);
+                        nextSequenceNumber = currentPacket.sequenceNumber;
+                    }
                 }
 
                 // We have a good packet
                 byte[] audioData = applyVolume(currentPacket.audioData, volume);
-                audioLine.write(audioData, 0, audioData.length);
+
+                // Queue the processed audio for the dedicated playback thread
+                // This call will block if the queue is full, providing back-pressure.
+                playbackQueue.put(audioData);
+
+                // Log sequence number of played packet
+                System.out.println("Queued packet for playback, seq: " + currentPacket.sequenceNumber);
+                
                 System.arraycopy(currentPacket.audioData, 0, lastGoodPacketData, 0, currentPacket.audioData.length);
 
                 nextSequenceNumber = currentPacket.sequenceNumber + 1;
+                packetsProcessedSinceReconnection++;
 
-                // Dynamically adjust jitter buffer size
                 adjustJitterBuffer();
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                System.out.println("Processing thread interrupted and stopping.");
+                break;
             }
         }
     }
@@ -194,6 +278,8 @@ public class AudioStreamReceiver implements Runnable {
         while (isRunning && packetBuffer.size() < jitterBufferSize) {
             Thread.sleep(10);
         }
+        // Buffer has filled to target level
+        buffering = false;
     }
 
     private void handlePacketLoss(long packetsLost, byte[] lastPacketData) {
@@ -224,12 +310,19 @@ public class AudioStreamReceiver implements Runnable {
 
     private void adjustJitterBuffer() {
         synchronized (packetBuffer) {
+            int currentSize = packetBuffer.size();
+            int oldBufferSize = jitterBufferSize;
+            
             if (packetBuffer.size() > jitterBufferSize + 20 && jitterBufferSize > MIN_JITTER_BUFFER_PACKETS) {
                 // Buffer is growing, we can reduce latency
-                jitterBufferSize = Math.max(MIN_JITTER_BUFFER_PACKETS, jitterBufferSize - 10);
+                jitterBufferSize = Math.max(MIN_JITTER_BUFFER_PACKETS, jitterBufferSize - 5);
             } else if (packetBuffer.size() < jitterBufferSize - 10 && jitterBufferSize < MAX_JITTER_BUFFER_PACKETS) {
                 // Buffer is shrinking, we need to increase it to avoid underruns
-                jitterBufferSize = Math.min(MAX_JITTER_BUFFER_PACKETS, jitterBufferSize + 10);
+                jitterBufferSize = Math.min(MAX_JITTER_BUFFER_PACKETS, jitterBufferSize + 5);
+            }
+            
+            if (oldBufferSize != jitterBufferSize) {
+                System.out.println("Jitter buffer adjusted: " + oldBufferSize + " -> " + jitterBufferSize + " (current packets: " + currentSize + ")");
             }
         }
     }
@@ -240,8 +333,9 @@ public class AudioStreamReceiver implements Runnable {
             throw new LineUnavailableException("Audio format not supported: " + audioFormat);
         }
         audioLine = (SourceDataLine) AudioSystem.getLine(info);
-        // Use a larger audio line buffer to prevent underruns at the OS level
-        audioLine.open(audioFormat, (BUFFER_SIZE_BYTES * 10));
+        // Use a larger driver buffer (~100 ms) so occasional OS scheduling hiccups don't block writes
+        int lineBufferBytes = (int) (SAMPLE_RATE * FRAME_SIZE * 0.10); // 0.10 s ≈ 17 640 bytes
+        audioLine.open(audioFormat, lineBufferBytes);
         audioLine.start();
         System.out.println("Audio line initialized with buffer size: " + audioLine.getBufferSize() + " bytes.");
     }
@@ -259,6 +353,8 @@ public class AudioStreamReceiver implements Runnable {
         songIndexChanged = false; // Reset flag after checking
         return changed;
     }
+
+    public boolean isBuffering() { return buffering; }
 
     private byte[] applyVolume(byte[] audioData, float volume) {
         if (Math.abs(volume - 1.0f) < 0.01f) {
