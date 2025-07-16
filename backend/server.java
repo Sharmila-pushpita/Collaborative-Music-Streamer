@@ -463,8 +463,9 @@ public class server {
                     } catch (IOException e) {
                         e.printStackTrace();
                     }
-                    playlistManager.moveToNextTrack();
-                    broadcastPlaylistUpdate();
+                    // playlistManager.moveToNextTrack();
+                    // broadcastPlaylistUpdate();
+                    songStartTime = System.currentTimeMillis(); // Reset start time for next track
                 }
             }
         }
@@ -515,9 +516,12 @@ public class server {
         if (isRadioActive && playlistManager.hasSongs()) {
             long now = System.currentTimeMillis();
             currentTime = (now - songStartTime) / 1000.0;
+
+            // System.out.println("DEBUG: currentTime=" + currentTime + ", totalDuration=" + totalDuration + ", songIndex=" + playlistManager.getCurrentSongIndex() + ", songCount=" + playlistManager.getSongCount());
             
             // Check if current song finished
             if (currentTime >= totalDuration) {
+                // System.out.println("DEBUG: Song finished - moving to next track");
                 playlistManager.moveToNextTrack();
                 broadcastPlaylistUpdate();
             }
