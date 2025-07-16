@@ -59,6 +59,10 @@ public class PrimaryController {
     private boolean isConnected = false;
     private boolean isServerConnected = false;
     private ScheduledExecutorService executorService;
+    
+    // Playlist tracking for song index mapping
+    private JSONArray currentPlaylist = new JSONArray();
+    private volatile int lastKnownSongIndex = -1;
 
     @FXML
     public void initialize() {
@@ -85,6 +89,9 @@ public class PrimaryController {
         
         // Start the executor service for periodic UI updates
         executorService = Executors.newSingleThreadScheduledExecutor();
+        
+        // Monitor song index changes from audio receiver
+        executorService.scheduleWithFixedDelay(this::checkSongIndexChanges, 0, 500, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
     private enum ConnectionState {
@@ -196,6 +203,7 @@ public class PrimaryController {
             // Disconnect from radio stream
             audioReceiver.stop();
             isConnected = false;
+            lastKnownSongIndex = -1; // Reset song index tracking
             playStopButton.setText("► Connect");
             playStopButton.getStyleClass().removeAll("play-button", "stop-button");
             playStopButton.getStyleClass().add("play-button");
@@ -209,6 +217,9 @@ public class PrimaryController {
             playStopButton.getStyleClass().removeAll("play-button", "stop-button");
             playStopButton.getStyleClass().add("stop-button");
             updateConnectionStatus(ConnectionState.PLAYING);
+            
+            // Set initial state - will be updated when first packet arrives
+            nowPlayingLabel.setText("Connecting to stream...");
             
             // Request current playing info
             out.println("STATUS");
@@ -224,6 +235,59 @@ public class PrimaryController {
             audioReceiver.setVolume((float) (volume / 100.0));
         }
     }
+    
+    private void checkSongIndexChanges() {
+        if (!isConnected || audioReceiver == null) {
+            return;
+        }
+        
+        // Check if song index has changed from audio receiver
+        int currentSongIndex = audioReceiver.getCurrentSongIndex();
+        if (currentSongIndex >= 0 && currentSongIndex != lastKnownSongIndex) {
+            lastKnownSongIndex = currentSongIndex;
+            updateNowPlayingFromSongIndex(currentSongIndex);
+        }
+    }
+    
+    private void updateNowPlayingFromSongIndex(int songIndex) {
+        Platform.runLater(() -> {
+            try {
+                if (songIndex >= 0 && songIndex < currentPlaylist.length()) {
+                    JSONObject song = currentPlaylist.getJSONObject(songIndex);
+                    String songTitle = song.getString("title");
+                    nowPlayingLabel.setText("♫ " + songTitle);
+                    System.out.println("Updated now playing from packet song index: " + songTitle);
+                    
+                    // Also update the playlist display to show the correct "Now Playing" indicator
+                    refreshPlaylistDisplay();
+                } else {
+                    nowPlayingLabel.setText("Playing unknown song (index: " + songIndex + ")");
+                }
+            } catch (JSONException e) {
+                System.err.println("Error updating now playing from song index: " + e.getMessage());
+            }
+        });
+    }
+    
+    private void refreshPlaylistDisplay() {
+        playlistView.getItems().clear();
+        for (int i = 0; i < currentPlaylist.length(); i++) {
+            try {
+                JSONObject song = currentPlaylist.getJSONObject(i);
+                String songTitle = song.getString("title");
+                
+                // Show current playing song based on actual song index from packets
+                if (isConnected && i == lastKnownSongIndex) {
+                    playlistView.getItems().add("♫ " + songTitle + " • Now Playing");
+                } else {
+                    playlistView.getItems().add("♪ " + songTitle);
+                }
+            } catch (JSONException e) {
+                System.err.println("Error processing playlist item: " + e.getMessage());
+            }
+        }
+        updatePlaylistCount(currentPlaylist.length());
+    }
 
     private void handleServerMessage(String jsonResponse) {
         try {
@@ -232,47 +296,31 @@ public class PrimaryController {
             if (json.getString("type").equals("PLAYLIST_UPDATE")) {
                 JSONObject payload = json.getJSONObject("payload");
                 
-                // Update now playing
-                JSONObject nowPlaying = payload.optJSONObject("now_playing");
-                Platform.runLater(() -> {
-                    if (nowPlaying != null && !nowPlaying.equals(JSONObject.NULL)) {
-                        String title = nowPlaying.getString("title");
-                        nowPlayingLabel.setText("♫ " + title);
-                    } else {
-                        nowPlayingLabel.setText("No songs in playlist");
-                    }
-                });
+                // Update now playing only when not connected to stream
+                // When connected, the nowPlayingLabel is controlled by packet-based song index updates
+                if (!isConnected) {
+                    JSONObject nowPlaying = payload.optJSONObject("now_playing");
+                    Platform.runLater(() -> {
+                        if (nowPlaying != null && !nowPlaying.equals(JSONObject.NULL)) {
+                            String title = nowPlaying.getString("title");
+                            nowPlayingLabel.setText("♫ " + title);
+                        } else {
+                            nowPlayingLabel.setText("No songs in playlist");
+                        }
+                    });
+                }
                 
                 // Update playlist
                 JSONArray queue = payload.getJSONArray("queue");
+                currentPlaylist = queue; // Store for song index mapping
                 Platform.runLater(() -> {
-                    playlistView.getItems().clear();
-                    for (int i = 0; i < queue.length(); i++) {
-                        JSONObject song = queue.getJSONObject(i);
-                        String songTitle = song.getString("title");
-                        boolean isCurrentlyPlaying = song.optBoolean("isPlaying", false);
-                        
-                        // Add visual indicators for different states
-                        if (isCurrentlyPlaying) {
-                            playlistView.getItems().add("♫ " + songTitle + " • Now Playing");
-                        } else {
-                            playlistView.getItems().add("♪ " + songTitle);
-                        }
-                    }
-                    updatePlaylistCount(queue.length());
+                    refreshPlaylistDisplay();
                 });
             } else if (json.getString("type").equals("PLAYBACK_STATE")) {
                 JSONObject payload = json.getJSONObject("payload");
                 
-                // Update current song info if connected
-                if (isConnected && payload.has("currentSong")) {
-                    String currentSong = payload.getString("currentSong");
-                    Platform.runLater(() -> {
-                        nowPlayingLabel.setText("♫ " + currentSong);
-                    });
-                }
-                
-                // Update radio status
+                // Only update radio status - don't update nowPlayingLabel from server broadcasts
+                // The nowPlayingLabel is now controlled by packet-based song index updates
                 if (payload.has("radioActive")) {
                     boolean radioActive = payload.getBoolean("radioActive");
                     if (!radioActive && isConnected) {

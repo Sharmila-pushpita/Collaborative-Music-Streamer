@@ -31,6 +31,7 @@ public class server {
     private static final int    SAMPLE_RATE = 44_100; // Hz
     private static final int    CHANNELS    = 2;      // stereo
     private static final int    BYTES_PER_SEC = SAMPLE_RATE * CHANNELS * 2; // 16-bit
+    private static final int    HEADER_SIZE_BYTES = 23; // 8+8+1+4+2 = seq+timestamp+flags+song_index+length
 
     private static final List<ClientHandler>           clients          = Collections.synchronizedList(new ArrayList<>());
     private static final PlaylistManager               playlistManager  = new PlaylistManager(AUDIO_DIR);
@@ -196,6 +197,7 @@ public class server {
         synchronized boolean hasSongs() { return !list.isEmpty(); }
         synchronized int getSongCount() { return list.size(); }
         synchronized File getCurrentTrack() { return list.isEmpty() ? null : list.get(idx); }
+        synchronized int getCurrentSongIndex() { return idx; }
 
         synchronized void moveToNextTrack() {
             if (!list.isEmpty()) {
@@ -212,8 +214,34 @@ public class server {
         }
 
         private void updateCurrentTrackDuration() {
-            // TODO: Get actual duration from ffmpeg/ffprobe
-            totalDuration = 180.0; // 3 minutes placeholder
+            File current = getCurrentTrack();
+            if (current == null) {
+                totalDuration = 0.0;
+                return;
+            }
+            try {
+                // Use ffprobe to get duration in seconds
+                ProcessBuilder pb = new ProcessBuilder(
+                    "ffprobe", "-v", "error", "-show_entries",
+                    "format=duration", "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    current.getAbsolutePath()
+                );
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String line = r.readLine();
+                    if (line != null) {
+                        totalDuration = Double.parseDouble(line.trim());
+                    } else {
+                        totalDuration = 180.0; // fallback
+                    }
+                }
+                p.waitFor();
+            } catch (Exception e) {
+                System.err.println("Failed to get duration for " + current.getName() + ": " + e.getMessage());
+                totalDuration = 180.0; // fallback
+            }
         }
 
         synchronized String getPlaylistStateJson() {
@@ -307,14 +335,16 @@ public class server {
                         /* Apply volume in-place */
                         applyVolume(buffer, n, currentVolume);
 
-                        /* Build packet: 8 B seq, 8 B timestamp, 1 B flags, 2 B len */
+                        /* Build packet: 8 B seq, 8 B timestamp, 1 B flags, 4 B song_index, 2 B len */
                         long timestamp = System.currentTimeMillis();
+                        int songIndex = playlistManager.getCurrentSongIndex();
 
-                        ByteArrayOutputStream baos = new ByteArrayOutputStream(n + 19);
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream(n + HEADER_SIZE_BYTES);
                         DataOutputStream dos = new DataOutputStream(baos);
                         dos.writeLong(seq++);
                         dos.writeLong(timestamp);
                         dos.writeByte(0);        // flags
+                        dos.writeInt(songIndex); // song index in playlist
                         dos.writeShort(n);
                         dos.write(buffer, 0, n);
 
@@ -364,11 +394,12 @@ public class server {
         }
 
         private void sendEndOfStreamPacket() throws IOException {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(19);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(HEADER_SIZE_BYTES);
             DataOutputStream dos = new DataOutputStream(baos);
             dos.writeLong(-1);                       // seq = -1 signals EOS
             dos.writeLong(System.currentTimeMillis());
             dos.writeByte(0x02);                     // EOS flag
+            dos.writeInt(playlistManager.getCurrentSongIndex()); // song index
             dos.writeShort(0);                       // len = 0
             byte[] pkt = baos.toByteArray();
 

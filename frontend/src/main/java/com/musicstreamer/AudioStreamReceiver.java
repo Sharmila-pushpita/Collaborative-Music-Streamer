@@ -17,7 +17,7 @@ import javax.sound.sampled.SourceDataLine;
 
 public class AudioStreamReceiver implements Runnable {
     private static final int BUFFER_SIZE_BYTES = 4096;
-    private static final int HEADER_SIZE_BYTES = 19;
+    private static final int HEADER_SIZE_BYTES = 23; // 8+8+1+4+2 = seq+timestamp+flags+song_index+length
     private static final int MAX_PACKET_SIZE = BUFFER_SIZE_BYTES + HEADER_SIZE_BYTES;
     private static final int SAMPLE_RATE = 44100;
     private static final int BITS_PER_SAMPLE = 16;
@@ -35,6 +35,10 @@ public class AudioStreamReceiver implements Runnable {
     private DatagramSocket socket;
     private SourceDataLine audioLine;
     private float volume = 1.0f;
+    
+    // Current song tracking
+    private volatile int currentSongIndex = -1;
+    private volatile boolean songIndexChanged = false;
 
     // Packet reordering and jitter buffer
     private final PriorityQueue<AudioPacket> packetBuffer = new PriorityQueue<>();
@@ -104,13 +108,17 @@ public class AudioStreamReceiver implements Runnable {
         long sequenceNumber = bb.getLong();
         long timestamp = bb.getLong();
         byte flags = bb.get();
+        int songIndex = bb.getInt();
         int length = bb.getShort() & 0xFFFF;
+
+        // Check if song changed
+        // Song index changes will be handled during playback to ensure accuracy with jitter buffer
 
         if (length > 0 && bb.remaining() >= length) {
             byte[] audioData = new byte[length];
             bb.get(audioData);
             synchronized (packetBuffer) {
-                packetBuffer.offer(new AudioPacket(sequenceNumber, audioData));
+                packetBuffer.offer(new AudioPacket(sequenceNumber, songIndex, audioData));
             }
         }
     }
@@ -157,6 +165,13 @@ public class AudioStreamReceiver implements Runnable {
                     long packetsLost = currentPacket.sequenceNumber - nextSequenceNumber;
                     System.out.println("Packet loss: " + packetsLost + " packets missing. Seq " + nextSequenceNumber + " to " + (currentPacket.sequenceNumber - 1));
                     handlePacketLoss(packetsLost, lastGoodPacketData);
+                }
+
+                // Update current song index based on the packet being *played* (not just received)
+                if (currentSongIndex != currentPacket.songIndex) {
+                    currentSongIndex = currentPacket.songIndex;
+                    songIndexChanged = true;
+                    System.out.println("Song index changed (playback) to: " + currentSongIndex);
                 }
 
                 // We have a good packet
@@ -234,6 +249,16 @@ public class AudioStreamReceiver implements Runnable {
     public void setVolume(float volume) {
         this.volume = Math.max(0.0f, Math.min(1.0f, volume));
     }
+    
+    public int getCurrentSongIndex() {
+        return currentSongIndex;
+    }
+    
+    public boolean hasSongIndexChanged() {
+        boolean changed = songIndexChanged;
+        songIndexChanged = false; // Reset flag after checking
+        return changed;
+    }
 
     private byte[] applyVolume(byte[] audioData, float volume) {
         if (Math.abs(volume - 1.0f) < 0.01f) {
@@ -258,10 +283,12 @@ public class AudioStreamReceiver implements Runnable {
 
     private static class AudioPacket implements Comparable<AudioPacket> {
         private final long sequenceNumber;
+        private final int songIndex;
         private final byte[] audioData;
 
-        public AudioPacket(long sequenceNumber, byte[] audioData) {
+        public AudioPacket(long sequenceNumber, int songIndex, byte[] audioData) {
             this.sequenceNumber = sequenceNumber;
+            this.songIndex = songIndex;
             this.audioData = audioData;
         }
 
